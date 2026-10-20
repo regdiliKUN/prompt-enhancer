@@ -1,0 +1,40 @@
+# ---------------- 用户数据（勿提交）----------------
+# 偏好设置 config.json、历史记录 history.db、界面/窗口状态 ui_state.json
+data/
+*.db
+*.db-shm
+*.db-wal
+ui_state.json
+launcher_error.log
+*_backup_*/
+
+# ---------------- Python ----------------
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+.venv/
+venv/
+env/
+
+# ---------------- 构建 / 打包产物 ----------------
+build/
+dist/
+*.spec
+PromptEnhancer/
+*.manifest
+
+# ---------------- 环境变量与密钥 ----------------
+.env
+.env.*
+*.pem
+*.key
+secrets.json
+
+# ---------------- 编辑器 / 系统 ----------------
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
