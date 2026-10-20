@@ -178,8 +178,25 @@ def inspect():
     return info
 
 
-def ensure(create=True):
-    """确保桌面快捷方式存在且指向正确目标"""
+def status():
+    """只返回桌面快捷方式的当前状态，不写入任何文件"""
+    info = inspect()
+    if not info["exists"]:
+        st = "missing"
+    elif info["matches"]:
+        st = "exists"
+    else:
+        st = "mismatch"
+    return {"status": st, "path": info["path"], "message": info["message"], "target": resolve_target()}
+
+
+def ensure(create=True, force=False):
+    """确保桌面快捷方式存在且指向正确目标。
+
+    force=True 时（用户显式点击「创建桌面快捷方式」），即使已有快捷方式指向
+    另一个有效程序也原地覆盖更新；界面按钮默认 force=False，避免开发环境与
+    包体互相抢夺同一个快捷方式。
+    """
     tgt = resolve_target()
     if os.name != "nt":
         return {"status": "unsupported", "path": None,
@@ -189,7 +206,7 @@ def ensure(create=True):
     lnk = info["path"]
     if info["exists"] and info["matches"]:
         return {"status": "exists", "path": lnk, "message": "快捷方式已存在，未重复创建（%s）" % lnk, "target": tgt}
-    if info["exists"] and info["target"] and os.path.isfile(info["target"]):
+    if info["exists"] and not force and info["target"] and os.path.isfile(info["target"]):
         # 已有快捷方式且其目标仍然有效（例如指向本应用的另一份安装），不互相覆盖
         return {"status": "exists_other", "path": lnk,
                 "message": "桌面已有快捷方式且指向有效程序（%s），未做改动；如需指向当前程序，请先删除该快捷方式再点击创建"

@@ -1,0 +1,18 @@
+# 保证 bat / cmd 在 Windows 上始终是 CRLF（cmd 用 LF 解析 if/goto 块会出错）
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+*.vbs text eol=crlf
+
+# 脚本与源码保持 LF
+*.sh text eol=lf
+*.py text eol=lf
+*.js text eol=lf
+*.css text eol=lf
+*.html text eol=lf
+*.md text eol=lf
+
+# 二进制资源不做任何转换
+*.ico binary
+*.png binary
+*.icns binary

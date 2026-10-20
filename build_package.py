@@ -38,6 +38,25 @@ def ensure_icon():
     return ico
 
 
+def copy_shortcut_entries(app_dir):
+    """把「一键创建桌面快捷方式」入口放进包体根目录，用户解压后双击即用"""
+    tools_dst = os.path.join(app_dir, "tools")
+    os.makedirs(tools_dst, exist_ok=True)
+    for name in ("create_shortcut.py", "create_shortcut.sh"):
+        src = os.path.join(ROOT, "tools", name)
+        if os.path.isfile(src):
+            shutil.copy2(src, os.path.join(tools_dst, name))
+    # bat 必须是 CRLF 换行，否则 cmd 解析 goto/标签会异常
+    for name in ("CreateShortcut.bat", "创建桌面快捷方式.bat"):
+        src = os.path.join(ROOT, name)
+        if not os.path.isfile(src):
+            continue
+        with open(src, "r", encoding="utf-8", newline="") as f:
+            text = f.read()
+        with open(os.path.join(app_dir, name), "w", encoding="utf-8", newline="\r\n") as f:
+            f.write(text.replace("\r\n", "\n").replace("\n", "\r\n"))
+
+
 def backup_and_restore(app_dir, func):
     data_dir = os.path.join(app_dir, "data")
     backup = None
@@ -99,19 +118,30 @@ def main():
     if not os.path.isfile(exe):
         raise SystemExit("打包完成但未找到 exe：%s" % exe)
 
+    copy_shortcut_entries(app_dir)
     shutil.copy2(os.path.join(ROOT, "README.md"), os.path.join(app_dir, "README.md"))
     with open(os.path.join(app_dir, "启动说明.txt"), "w", encoding="utf-8") as f:
         f.write(
             "提示词增强器（本地运行，不上传数据）\n"
             "====================================\n\n"
-            "1. 双击 PromptEnhancer.exe 即可启动，会自动打开浏览器界面。\n"
-            "2. 打开界面后，点击右上角蓝色按钮「一键启动 · 创建桌面快捷方式」，\n"
-            "   即可在桌面创建带图标的快捷方式，之后双击桌面图标即可直接启动。\n"
-            "3. 重复点击不会产生重复快捷方式；快捷方式指向变化时会自动更新。\n"
-            "4. 你的偏好设置、历史记录、窗口状态保存在：\n"
+            "【最推荐】第一步就做这件事：\n"
+            "  双击本目录下的「创建桌面快捷方式.bat」（或 CreateShortcut.bat），\n"
+            "  桌面会自动出现带图标的「提示词增强器」，以后双击它即可启动。\n"
+            "  重复双击只会刷新，不会产生第二个快捷方式。\n\n"
+            "其他启动方式：\n"
+            "1. 双击 PromptEnhancer.exe 启动，会自动打开浏览器界面；\n"
+            "   界面右上角蓝色按钮「一键启动 · 创建桌面快捷方式」也能创建桌面图标。\n"
+            "2. 命令行创建：PromptEnhancer.exe --create-shortcut\n"
+            "   查看状态：PromptEnhancer.exe --shortcut-status\n\n"
+            "说明：\n"
+            "3. 快捷方式指向本目录下的 PromptEnhancer.exe，工作目录为本目录，\n"
+            "   图标取 assets/icon.ico；移动整个目录后重新双击 bat 即可自动更新指向。\n"
+            "4. 只需普通用户权限；失败时会给出可读提示，并写入\n"
+            "   %LOCALAPPDATA%\\PromptEnhancer\\data\\shortcut_result.log。\n"
+            "5. 你的偏好设置、历史记录、窗口状态保存在：\n"
             "   %LOCALAPPDATA%\\PromptEnhancer\\data（并与包体目录 data/ 保持同步），\n"
             "   重新打包、移动或重装都不会丢失。\n"
-            "5. 首次使用前请确认本地推理服务已启动（默认 Ollama：http://127.0.0.1:11434）。\n"
+            "6. 首次使用前请确认本地推理服务已启动（默认 Ollama：http://127.0.0.1:11434）。\n"
         )
     size_mb = sum(
         os.path.getsize(os.path.join(dp, f))
@@ -119,9 +149,11 @@ def main():
     ) / 1024 / 1024
     print("\n打包完成：%s（约 %.1f MB）" % (exe, size_mb))
     print("自测步骤：")
-    print("  1) 运行：%s --no-browser --port 8757" % exe)
-    print("  2) 打开 http://127.0.0.1:8757/ 点击右上角「一键启动 · 创建桌面快捷方式」")
-    print("  3) 重复点击验证不重复创建；桌面双击快捷方式验证可启动")
+    print("  1) 双击包体根目录的「创建桌面快捷方式.bat」→ 桌面出现「提示词增强器」")
+    print("  2) 再双击一次 → 提示已存在，且不产生第二个快捷方式")
+    print("  3) 双击桌面快捷方式 → 程序正常启动（服务起来并打开界面）")
+    print("  4) 把整个目录挪到别处，再双击 bat → 快捷方式指向自动更新为新的 exe 路径")
+    print("  5) 命令行：%s --shortcut-status / --create-shortcut --no-dialog" % os.path.basename(exe))
 
 
 if __name__ == "__main__":
