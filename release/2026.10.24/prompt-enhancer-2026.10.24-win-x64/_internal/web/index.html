@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>提示词增强器 · 本地运行</title>
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">PE</span>
+    <div>
+      <h1>提示词增强器</h1>
+      <p class="sub">本地小模型驱动 · 不上传任何数据</p>
+    </div>
+  </div>
+
+  <div class="topbar-right">
+    <div id="statusPill" class="pill pill-idle">
+      <span class="dot"></span><span id="statusText">正在检测模型…</span>
+    </div>
+    <button class="btn primary btn-launch" id="btnShortcut" title="在桌面创建带图标的快捷方式，并通过它启动程序（重复点击不会重复创建）">
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <rect x="3" y="4" width="18" height="13" rx="2"></rect>
+        <path d="M9 21h6M12 17v4"></path>
+        <path d="M12 12l3-3-3-3M9 9h6" transform="translate(-1.5 0)"></path>
+      </svg>
+      <span id="btnShortcutText">一键启动 · 创建桌面快捷方式</span>
+    </button>
+    <button class="btn ghost" id="btnHistory">历史记录</button>
+    <button class="btn ghost" id="btnSettings">设置</button>
+  </div>
+</header>
+
+<div class="banner hidden" id="scBanner">
+  <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <circle cx="12" cy="12" r="9"></circle><path d="M12 8v4M12 16h.01"></path>
+  </svg>
+  <span id="scBannerText">桌面快捷方式尚未创建 —— 点击右上角「一键启动」即可在桌面创建快捷方式并启动程序。</span>
+  <button class="btn tiny" id="btnBannerCreate">立即创建</button>
+  <button class="btn tiny ghost" id="btnBannerHide">暂不提示</button>
+</div>
+
+<section class="toolbar">
+  <div class="presets" id="presets"></div>
+  <div class="params">
+    <label>模型
+      <select id="modelSelect"><option value="">未选择</option></select>
+    </label>
+    <label>温度
+      <input type="number" id="temperature" min="0" max="2" step="0.1" value="0.3">
+    </label>
+    <label>最大长度
+      <input type="number" id="maxTokens" min="64" max="8192" step="64" value="1024">
+    </label>
+  </div>
+</section>
+
+<main class="workspace">
+  <section class="pane">
+    <div class="pane-head">
+      <h2>原始提示词</h2>
+      <span class="meta" id="inCount">0 字</span>
+      <button class="btn tiny ghost" id="btnClearIn">清空</button>
+    </div>
+    <textarea id="input" spellcheck="false" placeholder="把你要投喂给 AI 的原始提示词粘贴到这里…&#10;&#10;例如：帮我写个爬虫，抓一下那个网站的数据，谢谢啦，越快越好"></textarea>
+    <div class="pane-foot">
+      <div class="extra">
+        <label class="switch">
+          <input type="checkbox" id="extraToggle">
+          <span>补充要求（可选）</span>
+        </label>
+        <input type="text" id="extra" class="hidden" placeholder="如：输出控制在 300 字以内；保留我给的示例格式">
+      </div>
+      <button class="btn primary" id="btnOptimize">一键优化 <kbd>Ctrl+Enter</kbd></button>
+    </div>
+  </section>
+
+  <div class="splitter" id="splitter" title="拖动调整左右分栏"></div>
+
+  <section class="pane">
+    <div class="pane-head">
+      <h2>优化结果</h2>
+      <span class="meta" id="outMeta">等待优化</span>
+      <button class="btn tiny ghost" id="btnClearOut">清空</button>
+    </div>
+    <textarea id="output" spellcheck="false" placeholder="优化后的提示词会出现在这里，可直接编辑…"></textarea>
+    <div class="pane-foot">
+      <span class="hint" id="outHint">结果可编辑，编辑后仍可复制或再次优化</span>
+      <div class="right">
+        <button class="btn ghost" id="btnCompare">对比查看</button>
+        <button class="btn ghost" id="btnIterate">迭代优化</button>
+        <button class="btn ghost" id="btnCopy">复制结果</button>
+      </div>
+    </div>
+  </section>
+</main>
+
+<!-- 历史记录抽屉 -->
+<aside class="drawer" id="historyDrawer">
+  <div class="drawer-head">
+    <h3>历史记录</h3>
+    <div class="right">
+      <button class="btn tiny ghost" id="btnClearHistory">清空全部</button>
+      <button class="btn tiny ghost" id="btnCloseHistory">关闭</button>
+    </div>
+  </div>
+  <div class="drawer-body">
+    <input type="search" id="historySearch" placeholder="检索原文或结果…">
+    <div id="historyList" class="history-list"></div>
+  </div>
+</aside>
+
+<!-- 设置抽屉 -->
+<aside class="drawer wide" id="settingsDrawer">
+  <div class="drawer-head">
+    <h3>设置</h3>
+    <div class="right">
+      <button class="btn tiny ghost" id="btnCloseSettings">关闭</button>
+    </div>
+  </div>
+  <div class="drawer-body">
+    <div class="field">
+      <label>推理服务地址</label>
+      <input type="text" id="cfgEndpoint" placeholder="http://127.0.0.1:11434">
+      <p class="tip">支持 Ollama（http://127.0.0.1:11434）与 OpenAI 兼容服务（llama.cpp / LM Studio / vLLM，可填 http://127.0.0.1:8080/v1）</p>
+    </div>
+    <div class="field row">
+      <div>
+        <label>接口类型</label>
+        <select id="cfgApi">
+          <option value="auto">自动识别</option>
+          <option value="ollama">Ollama 原生</option>
+          <option value="openai">OpenAI 兼容</option>
+        </select>
+      </div>
+      <div>
+        <label>超时（秒）</label>
+        <input type="number" id="cfgTimeout" min="10" max="1200" step="10">
+      </div>
+    </div>
+    <div class="field">
+      <label>模型名称</label>
+      <input type="text" id="cfgModel" placeholder="如 qwen2.5:7b-instruct / llama3.2:3b">
+      <div class="inline">
+        <button class="btn tiny" id="btnTestConn">测试连接 / 拉取模型列表</button>
+        <span class="meta" id="testResult">—</span>
+      </div>
+      <div id="modelHints" class="hints"></div>
+    </div>
+    <div class="field">
+      <label>API Key（可选，本地服务一般留空）</label>
+      <input type="password" id="cfgApiKey" placeholder="留空则不发送鉴权头">
+    </div>
+    <div class="field">
+      <label>系统提示词模板（优化规则）</label>
+      <textarea id="cfgSystem" rows="12" spellcheck="false"></textarea>
+      <div class="inline">
+        <button class="btn tiny ghost" id="btnResetSystem">恢复默认模板</button>
+      </div>
+    </div>
+    <div class="drawer-foot">
+      <button class="btn primary" id="btnSaveConfig">保存设置</button>
+      <span class="meta">配置与历史均保存在本地 data/ 目录</span>
+    </div>
+  </div>
+</aside>
+
+<!-- 对比弹窗 -->
+<div class="modal hidden" id="diffModal">
+  <div class="modal-box">
+    <div class="modal-head">
+      <h3>优化前后对比</h3>
+      <button class="btn tiny ghost" id="btnCloseDiff">关闭</button>
+    </div>
+    <div class="modal-body" id="diffBody"></div>
+  </div>
+</div>
+
+<div class="scrim hidden" id="scrim"></div>
+<div class="toast hidden" id="toast"></div>
+
+<script src="/app.js"></script>
+</body>
+</html>

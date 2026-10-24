@@ -1,0 +1,32 @@
+提示词增强器（本地运行，不上传数据）
+====================================
+
+【最推荐】第一步就做这件事：
+  双击本目录下的「创建桌面快捷方式.bat」（或 CreateShortcut.bat），
+  桌面会自动出现带图标的「提示词增强器」，以后双击它即可启动。
+  重复双击只会刷新，不会产生第二个快捷方式。
+
+其他启动方式：
+1. 双击 PromptEnhancer.exe 启动，会自动打开浏览器界面；
+   界面右上角蓝色按钮「一键启动 · 创建桌面快捷方式」也能创建桌面图标。
+2. 命令行创建：PromptEnhancer.exe --create-shortcut
+   查看状态：PromptEnhancer.exe --shortcut-status
+
+说明：
+3. 快捷方式指向本目录下的 PromptEnhancer.exe，工作目录为本目录，
+   图标取 assets/icon.ico；移动整个目录后重新双击 bat 即可自动更新指向。
+4. 只更新本产品自己创建的快捷方式：桌面若已有「同名但不是本产品创建」的
+   快捷方式，本程序不会创建、覆盖或删除它，只给出提示；
+   可用 PromptEnhancer.exe --create-shortcut --shortcut-name "提示词增强器-2.lnk" 换名创建。
+5. 更新自己的快捷方式前会自动备份到 data\shortcut_backup\，失败自动回滚；
+   手动回滚：PromptEnhancer.exe --restore-shortcut。
+6. 只需普通用户权限；失败时会给出可读提示，并写入
+   %LOCALAPPDATA%\PromptEnhancer\data\shortcut_result.log。
+7. 若桌面的快捷方式指向另一个仍可用的安装（例如同时保留源码目录），
+   本程序不会覆盖它，只提示并直接启动当前程序。
+
+数据：
+8. 你的偏好设置、历史记录、窗口状态保存在：
+   %LOCALAPPDATA%\PromptEnhancer\data（并与包体目录 data/ 保持同步），
+   重新打包、移动或重装都不会丢失。
+9. 首次使用前请确认本地推理服务已启动（默认 Ollama：http://127.0.0.1:11434）。
