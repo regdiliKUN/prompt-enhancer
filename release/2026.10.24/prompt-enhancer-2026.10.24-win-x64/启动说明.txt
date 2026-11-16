@@ -3,8 +3,9 @@
 
 【最推荐】第一步就做这件事：
   双击本目录下的「创建桌面快捷方式.bat」（或 CreateShortcut.bat），
-  桌面会自动出现带图标的「提示词增强器」，以后双击它即可启动。
-  重复双击只会刷新，不会产生第二个快捷方式。
+  桌面会出现带图标的「提示词增强器」，以后双击它即可启动。
+  重复双击是幂等的：已存在且指向正确时不会重复创建，也不会产生第二个快捷方式；
+  只有当程序被移动导致指向失效时才会原地更新。
 
 其他启动方式：
 1. 双击 PromptEnhancer.exe 启动，会自动打开浏览器界面；
@@ -24,6 +25,12 @@
    %LOCALAPPDATA%\PromptEnhancer\data\shortcut_result.log。
 7. 若桌面的快捷方式指向另一个仍可用的安装（例如同时保留源码目录），
    本程序不会覆盖它，只提示并直接启动当前程序。
+
+macOS / Linux 用户：
+  在终端执行：bash tools/create_shortcut.sh
+  只检查状态：bash tools/create_shortcut.sh --check
+  换名创建：  bash tools/create_shortcut.sh --name "提示词增强器-2"
+  脚本会自动定位程序目录与桌面，无需管理员权限。
 
 数据：
 8. 你的偏好设置、历史记录、窗口状态保存在：

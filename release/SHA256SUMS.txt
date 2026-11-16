@@ -1,6 +1,6 @@
-a65d25f114efa75d81719259d8e89fee7d5b03d9b1f5df435d7984ae98106531  release/2026.10.24/prompt-enhancer-2026.10.24-win-x64/CreateShortcut.bat
+97f8959fa4dae38a4afa913851c2e06781dcfe38b2284506949fb97c47885d1a  release/2026.10.24/prompt-enhancer-2026.10.24-win-x64/CreateShortcut.bat
 f26b99817d4d15a78b83c39ba26cc5ad7f489d28eb3aeaa8ea7f41a10367c801  release/2026.10.24/prompt-enhancer-2026.10.24-win-x64/PromptEnhancer.exe
-e2bc24167f4bda9e01212e1ed802e20f9c8357b8da323fba0ccf6c89dec4aa61  release/2026.10.24/prompt-enhancer-2026.10.24-win-x64/README.md
+dcbd7116c3acaa8d7c20c868d3c26c5fa3dee5ff6aec5460fd7886f4777b376b  release/2026.10.24/prompt-enhancer-2026.10.24-win-x64/README.md
 d5e4d9a3e835fa679450145d6a7d94e36573a509317111904d9b3712c30d9066  release/2026.10.24/prompt-enhancer-2026.10.24-win-x64/_internal/VCRUNTIME140.dll
 ea5aa5c49abe44d4441fc7bd5ca906212d271d7242fc89248c665abe2540a6cd  release/2026.10.24/prompt-enhancer-2026.10.24-win-x64/_internal/_bz2.pyd
 7c02c8573f10caca9e1cc823d257974fbdef03a7360d22af2dce7b3179111e81  release/2026.10.24/prompt-enhancer-2026.10.24-win-x64/_internal/_ctypes.pyd
@@ -63,10 +63,10 @@ bcb77c6a18ba81d7d09a9f8906e9e4b6388be67074efcc972041a8f47f5d2059  release/2026.1
 e19c4f4c999aff1e43cdd15163d583f119fa0a97ac31ca8b1e87ef0c60a6672a  release/2026.10.24/prompt-enhancer-2026.10.24-win-x64/_internal/sqlite3.dll
 3239227d27667ba20d10a880751924e5719de0078f9fce232d149d383f7681f6  release/2026.10.24/prompt-enhancer-2026.10.24-win-x64/_internal/ucrtbase.dll
 67160db8f535e9e40aa67baa49891d4186773a04a92d5977f33e79a7180728d5  release/2026.10.24/prompt-enhancer-2026.10.24-win-x64/_internal/unicodedata.pyd
-f100488e5ad34a230dc65b09ec233b0adce185f3caacd5fb82efc90101629ba6  release/2026.10.24/prompt-enhancer-2026.10.24-win-x64/_internal/web/app.js
-bd151729721d23d344189a06177dea38e78ea07ae0d21acbc7ed2273349678a7  release/2026.10.24/prompt-enhancer-2026.10.24-win-x64/_internal/web/index.html
-35d00f1bc68256284c7a966781850ef78ed14b09791429c255a5943e435e7025  release/2026.10.24/prompt-enhancer-2026.10.24-win-x64/_internal/web/styles.css
-ea9d21873abf447d84d31978bade15414b54b1d41580af9b0fa373cfc5e10565  release/2026.10.24/prompt-enhancer-2026.10.24-win-x64/tools/create_shortcut.py
-794d392c96ef69bf741eebbcbb6fe4c85ceacc483daa36ec37d82e331d968db7  release/2026.10.24/prompt-enhancer-2026.10.24-win-x64/tools/create_shortcut.sh
-a9146fbaaebe10f673741b6b69734ab60c16d12faaf30626e1fa37e4ad370f8f  release/2026.10.24/prompt-enhancer-2026.10.24-win-x64/创建桌面快捷方式.bat
-18f9cd09f5f28e24da8cbaa7ae75570110aa5472f820e4d709f32ade6acb75bd  release/2026.10.24/prompt-enhancer-2026.10.24-win-x64/启动说明.txt
+c9d41f2e501a9036f4fe23a606b5b602c4a15e5946bf7c2bcc27b03a9033e5d9  release/2026.10.24/prompt-enhancer-2026.10.24-win-x64/_internal/web/app.js
+482ba069ef478537e28e5b9c2e83c381d65e1e2de1321820a3246324847d2561  release/2026.10.24/prompt-enhancer-2026.10.24-win-x64/_internal/web/index.html
+009d36588d5b73bc33531ca244a01377e0f0092eacfa9976d5c18dbdbc46f511  release/2026.10.24/prompt-enhancer-2026.10.24-win-x64/_internal/web/styles.css
+e884f425636e895d06716e4b7c14f129178e12a29385b8607ada16b27e8f6949  release/2026.10.24/prompt-enhancer-2026.10.24-win-x64/tools/create_shortcut.py
+3fd67a1d5501179142531fe3453352e845185716e3cb5337d3be3b48123376be  release/2026.10.24/prompt-enhancer-2026.10.24-win-x64/tools/create_shortcut.sh
+8227bfc49f05832da0dce355380d8660a4606cf3b310a5af5d9898176bd195c1  release/2026.10.24/prompt-enhancer-2026.10.24-win-x64/创建桌面快捷方式.bat
+17e8063016366d7304c6445109c49e8e181df133fafe61e35b91ae629e7b6e21  release/2026.10.24/prompt-enhancer-2026.10.24-win-x64/启动说明.txt

@@ -190,6 +190,9 @@ def desktop_dir(explicit=None):
                 if os.path.isdir(p):
                     return p
         return os.path.join(os.path.expanduser("~"), "Desktop")
+    # Linux 尊重 XDG_DESKTOP_DIR（与 shell 版保持一致）；该函数原本定义了却从未被调用
+    if sys.platform.startswith("linux"):
+        return linux_desktop_dir()
     return os.path.join(os.path.expanduser("~"), "Desktop")
 
 
@@ -264,6 +267,23 @@ def read_lnk(path):
     return None
 
 
+def _same_target(a, b):
+    """比较两个目标路径是否指向同一文件：展开环境变量/~、去引号、大小写与路径分隔规范化"""
+    def norm(p):
+        p = (p or "").strip().strip('"')
+        if not p:
+            return ""
+        p = os.path.expandvars(os.path.expanduser(p))
+        try:
+            p = os.path.realpath(p)
+        except OSError:
+            pass
+        return os.path.normcase(os.path.normpath(p))
+
+    na, nb = norm(a), norm(b)
+    return bool(na) and na == nb
+
+
 def is_owned(cur, tgt):
     """判断同名快捷方式是否为本产品创建（绝不改动用户自建的快捷方式）"""
     if not cur:
@@ -273,7 +293,7 @@ def is_owned(cur, tgt):
         return True
     if d.startswith(APP_NAME):  # 旧版本创建的
         return True
-    if cur.get("target") and os.path.normcase(cur["target"]) == os.path.normcase(tgt["target"]):
+    if _same_target(cur.get("target"), tgt.get("target")):
         return True  # 指向本程序本身，即使没有标记也可安全更新
     return False
 
@@ -299,15 +319,33 @@ def backup_link(root, path, cur):
         return None
 
 
-def restore_backup(root, name):
+def restore_backup(root, name, desktop=None):
     d = backup_dir(root)
     src = os.path.join(d, name)
-    desk = desktop_dir(None)
+    desk = desktop or desktop_dir(None)
     dst = os.path.join(desk, name)
     if not os.path.isfile(src):
         return False, "没有可恢复的备份（%s 不存在）" % src
+    # 绝不覆盖用户自建的同名快捷方式——与创建流程遵守同一条归属约定。
+    if os.path.exists(dst):
+        if os.name == "nt":
+            cur = read_lnk(dst)
+            # 传空 target：只依据 Description 归属标记判断，不把"恰好指向同路径"算作本产品
+            if not is_owned(cur, {"target": ""}):
+                return False, ("桌面已存在同名快捷方式，且不是本产品创建的；"
+                               "为保护你的文件，未执行恢复。可先手动移走它再重试。")
+        else:
+            try:
+                with open(dst, encoding="utf-8", errors="replace") as f:
+                    if UNIX_MARK not in f.read():
+                        return False, ("桌面已存在同名启动器，且不是本产品创建的；"
+                                       "为保护你的文件，未执行恢复。")
+            except OSError:
+                pass
     try:
         shutil.copy2(src, dst)
+        if os.name != "nt":
+            os.chmod(dst, os.stat(dst).st_mode | stat.S_IXUSR)
         return True, "已把快捷方式恢复为最近一次修改前的状态：%s" % dst
     except Exception as exc:  # noqa: BLE001
         return False, "恢复失败：%s" % exc
@@ -392,7 +430,7 @@ def _verify_lnk(path, tgt):
     cur = read_lnk(path)
     if not cur:
         return None
-    return os.path.normcase(cur["target"] or "") == os.path.normcase(tgt["target"])
+    return _same_target(cur.get("target"), tgt.get("target"))
 
 
 def write_lnk(path, tgt):
@@ -506,7 +544,7 @@ def check_windows(link, tgt):
     cur = read_lnk(link) if exists else None
     if not cur:
         return {"exists": exists, "correct": False, "owned": False, "current": None}
-    same_target = os.path.normcase(cur["target"] or "") == os.path.normcase(tgt["target"])
+    same_target = _same_target(cur.get("target"), tgt.get("target"))
     same_icon = (not tgt["icon"]) or (cur["icon"] or "").lower().startswith(tgt["icon"].lower())
     same_args = (cur["arguments"] or "") == (tgt["arguments"] or "")
     return {"exists": True, "correct": bool(same_target and same_icon and same_args),
@@ -517,11 +555,13 @@ def ensure_windows(link, tgt, force, root):
     info = check_windows(link, tgt)
     if info["exists"] and not info["owned"]:
         # 用户自建的同名快捷方式：绝不创建 / 覆盖 / 删除，只提示
+        # read_lnk 失败时 current 为 None，不能直接下标；用 .get 安全降级为「未知」
+        cur_target = (info.get("current") or {}).get("target") or "未知"
         return {"status": "name_taken", "path": link,
                 "message": ("桌面已有同名快捷方式，但它不是本产品创建的（指向：%s）。"
                             "为保护你的自建快捷方式，本工具不会改动它；"
                             "可用 --name 换一个名称为本产品创建。"
-                            % (info["current"]["target"] or "未知"))}
+                            % cur_target)}
     if info["exists"] and info["correct"] and not force:
         return {"status": "exists", "path": link,
                 "message": "桌面快捷方式已存在且指向正确，未重复创建：%s" % link}
@@ -567,11 +607,16 @@ def ensure_unix(root, tgt, desktop, force, system, link_name=None):
             if tgt["target"] in content and not force:
                 return {"status": "exists", "path": path,
                         "message": "桌面启动器已存在且指向正确，未重复创建：%s" % path}
-            backup_file = backup_link(root, path, {"target": content.splitlines()[0] if content else ""})
+            # 备份元信息应记录真正的启动目标，而非 shebang 首行 "#!/bin/bash"
+            old_target = tgt["target"] if tgt["target"] in content else ""
+            backup_file = backup_link(root, path, {"target": old_target})
         else:
             backup_file = None
         res = mac_create(path, tgt)
-        if UNIX_MARK not in open(res["path"], encoding="utf-8").read():
+        # 用 with 读取，避免文件句柄泄漏（mac_create 生成的启动器需要带归属标记）
+        with open(res["path"], encoding="utf-8") as f:
+            need_mark = UNIX_MARK not in f.read()
+        if need_mark:
             with open(res["path"], "a", encoding="utf-8") as f:
                 f.write(UNIX_MARK + "\n")
         return {"status": "updated" if existed else "created", "path": res["path"],
@@ -619,12 +664,22 @@ def normalize_name(name, system):
     name = (name or "").strip()
     if not name:
         return ""
-    # 注意 sys.platform 在 Windows 上是 "win32"，不是 "nt"
-    if os.name == "nt" and not name.lower().endswith(".lnk"):
-        name += ".lnk"
-    # 防路径逃逸：只允许文件名
+    # 先校验再补扩展名：否则 ".." 会被补成 "...lnk" 而绕过下面的特殊名检查
     if os.path.basename(name) != name or name in (".", ".."):
         raise ShortcutError("快捷方式名称不合法：%s（只能是文件名，不能包含路径）" % name)
+    # Windows 文件名禁用字符；按 system 参数判定（与后缀补全一致），
+    # 这样跨平台自测指定 system="win32" 时也能覆盖到校验逻辑
+    if str(system).startswith("win"):
+        bad = [c for c in '<>:"/\\|?*' if c in name]
+        if bad:
+            raise ShortcutError("快捷方式名称包含 Windows 不允许的字符（%s），请换一个名称" % " ".join(bad))
+    # 按平台补全扩展名：Windows→.lnk，macOS→.command，Linux→.desktop。
+    # 缺少后缀时桌面环境不会识别为快捷方式（macOS 无法双击、Linux 不显示为启动器）。
+    suffix = (".lnk" if str(system).startswith("win")
+              else ".command" if system == "darwin"
+              else ".desktop" if str(system).startswith("linux") else "")
+    if suffix and not name.lower().endswith(suffix):
+        name += suffix
     return name
 
 
@@ -642,10 +697,10 @@ def run(args):
 
     if args.restore:
         if os.name == "nt":
-            ok, msg = restore_backup(root, name or LINK_NAME)
+            ok, msg = restore_backup(root, name or LINK_NAME, desktop)
             return {"status": "restored" if ok else "failed", "root": root,
                     "target": tgt, "desktop": desktop, "message": msg}
-        ok, msg = restore_backup(root, name or (COMMAND_NAME if system == "darwin" else DESKTOP_ENTRY))
+        ok, msg = restore_backup(root, name or (COMMAND_NAME if system == "darwin" else DESKTOP_ENTRY), desktop)
         return {"status": "restored" if ok else "failed", "root": root,
                 "target": tgt, "desktop": desktop, "message": msg}
 
@@ -654,8 +709,9 @@ def run(args):
         if args.check:
             info = check_windows(link, tgt)
             if info["exists"] and not info["owned"]:
+                cur_target = (info.get("current") or {}).get("target") or "未知"
                 st, msg = "name_taken", ("桌面已有同名快捷方式，但它不是本产品创建的（指向：%s），不会改动它。"
-                                         % (info["current"]["target"] or "未知"))
+                                         % cur_target)
             else:
                 st = "exists" if info["exists"] and info["correct"] else (
                     "mismatch" if info["exists"] else "missing")
@@ -685,7 +741,11 @@ def run(args):
 
     res.update({"root": root, "target": tgt, "desktop": desktop})
     if args.launch and res["status"] not in ("failed", "name_taken"):
-        res["launched"] = launch(res["path"], tgt)
+        launched = launch(res["path"], tgt)
+        res["launched"] = launched
+        # 与 shell 版一致：启动失败不能静默，要在用户可见的结果里明确说明
+        if not launched:
+            res["message"] += "；但自动启动失败，请手动双击桌面快捷方式"
     return res
 
 

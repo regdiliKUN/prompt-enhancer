@@ -15,6 +15,16 @@
 
 * { box-sizing: border-box; }
 
+/* 键盘导航焦点可见：仅在使用键盘时出现，鼠标点击不显示，避免干扰视觉 */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.btn:focus-visible, .chip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 html, body {
   height: 100%;
   margin: 0;
@@ -195,6 +205,11 @@ p { margin: 0; }
   font: 13.5px/1.75 "Cascadia Code", Consolas, "Microsoft YaHei", monospace;
 }
 .pane textarea::placeholder { color: #5d6878; }
+/* textarea 的 outline:none 会盖过全局 :focus-visible，键盘用户看不到焦点；这里补回 */
+.pane textarea:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
 
 .pane-foot {
   display: flex; align-items: center; justify-content: space-between; gap: 10px;
@@ -308,10 +323,23 @@ p { margin: 0; }
   background: #202836; border: 1px solid var(--border);
   color: var(--text); padding: 9px 16px; border-radius: 999px;
   font-size: 13px; z-index: 90; box-shadow: 0 8px 26px rgba(0,0,0,.4);
+  /* 错误提示可能含长路径，限制宽度并允许换行，避免窄屏溢出视口 */
+  max-width: min(92vw, 680px);
+  overflow-wrap: anywhere;
+  text-align: center;
 }
 
 @media (max-width: 900px) {
   .workspace { grid-template-columns: 1fr; }
   .splitter { display: none; }
   .drawer, .drawer.wide { width: 100%; }
+}
+
+/* 尊重系统「减少动态效果」偏好，关闭闪烁与位移动画 */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+  }
 }

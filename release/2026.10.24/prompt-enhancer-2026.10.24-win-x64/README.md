@@ -6,7 +6,7 @@
 
 ## 主要特性
 
-- **并排输入 / 输出**：左侧粘贴原始提示词，右侧流式生成优化结果；结果可编辑、复制、迭代再优化。
+- **并排输入 / 输出**：左侧粘贴原始提示词，右侧流式生成优化结果；生成过程中输出区暂为只读以保护流式内容，完成后即可编辑、复制、迭代再优化。
 - **本地小模型推理**：支持 Ollama 原生接口与 OpenAI 兼容接口（llama.cpp / LM Studio / vLLM），
   可配置温度、最大生成长度、超时；页面顶部实时显示模型加载与推理状态，未就绪时给出明确原因。
 - **优化规则固化为系统提示词模板**：忠实原意与已有约束、删除寒暄与重复、用占位符补全缺失上下文、
@@ -47,7 +47,7 @@ python server.py --no-browser  # 不自动打开浏览器
 ## 打包为桌面应用
 
 ```bash
-python build_package.py              # 输出到 I:\workbuddyAI\prompt-enhancer\PromptEnhancer\
+python build_package.py              # 输出到当前目录下的 PromptEnhancer\
 python build_package.py --out D:\xx  # 自定义输出目录
 python build_package.py --console    # 带控制台窗口（排错用）
 ```
@@ -63,7 +63,7 @@ python build_package.py --console    # 带控制台窗口（排错用）
 - 异常兼容：桌面目录不可写、WScript.Shell 被组策略禁用、PowerShell 缺失、目标缺失等情况都会给出
   可读的中文错误说明与建议，不会静默失败。
 - 单实例：重复双击 exe 或快捷方式时不会启动第二个服务，只打开已运行实例的界面。
-- 图标由 `tools/make_icon.py` 生成（`assets/icon.ico`），exe 与快捷方式共用，视觉一致。
+- 图标位于 `assets/icon.ico`（构建期生成，交付包内已包含该文件），exe 与快捷方式共用，视觉一致。
 
 ## 桌面快捷方式：包体内的一键创建入口
 
@@ -124,7 +124,13 @@ bash tools/create_shortcut.sh            # 自动识别根目录并创建
 bash tools/create_shortcut.sh --check    # 只检查
 bash tools/create_shortcut.sh --force    # 强制重写
 bash tools/create_shortcut.sh --launch   # 创建后立即启动
+bash tools/create_shortcut.sh --name "提示词增强器-2"   # 换名创建（避开用户自建同名文件）
+bash tools/create_shortcut.sh --root "D:\xx\PromptEnhancer"  # 指定根目录（排错）
+bash tools/create_shortcut.sh --desktop "/tmp/desk"   # 指定桌面目录（自测）
 ```
+
+> 覆盖本产品自己创建的启动器前会备份到 `data/shortcut_backup/`；`--check` 只报告状态、不写入任何文件。
+> shell 版与 Python 版共用同一归属标记 `# made-by-prompt-enhancer`，因此两种实现创建/更新的启动器可互相识别。
 
 | 系统 | 生成物 | 说明 |
 | --- | --- | --- |
@@ -150,9 +156,13 @@ PromptEnhancer.exe --create-shortcut --shortcut-name "提示词增强器-2.lnk"
 python tools/create_shortcut.py --name "提示词增强器-2"
 ```
 
+> `--name` 只需给主名，脚本会按平台自动补后缀（Windows `.lnk` / macOS `.command` / Linux `.desktop`）；
+> 传入带正确后缀的名称也不会重复追加。
+
 **备份与回滚**：覆盖自己创建过的快捷方式前，会把旧文件备份到
 `<数据目录>/shortcut_backup/提示词增强器.lnk`（附 `.json` 元信息）；写入失败或校验不通过时
-**自动回滚**并提示「桌面快捷方式保持原样」。手动回滚：
+**自动回滚**并提示「桌面快捷方式保持原样」。macOS / Linux 下 shell 版覆盖前同样会把旧启动器
+备份到 `data/shortcut_backup/`（可用 `cp` 拷回桌面手动恢复）。手动回滚（Windows）：
 
 ```bat
 PromptEnhancer.exe --restore-shortcut
@@ -237,7 +247,6 @@ prompt-enhancer/
 ├── .gitattributes       # 强制 bat 用 CRLF、sh/py 用 LF
 ├── assets/icon.ico      # 应用图标（exe 与快捷方式共用）
 ├── tools/
-│   ├── make_icon.py     # 图标生成脚本（依赖 Pillow，仅构建期使用）
 │   ├── create_shortcut.py  # 跨平台一键创建脚本（仅标准库，Windows/macOS/Linux）
 │   └── create_shortcut.sh  # macOS / Linux 的等价 shell 入口
 ├── web/                 # 前端：index.html / styles.css / app.js（原生，无构建）
@@ -248,5 +257,7 @@ prompt-enhancer/
 
 - **模型未就绪**：确认 Ollama 已启动（`ollama serve`）且地址端口与设置一致；本机若设置了 HTTP 代理，
   后端已强制直连本地服务，无需额外处理。
+- **提示模型未找到**：设置里「测试连接 / 拉取模型列表」会列出本机实际可用的模型名，点选其中一个保存即可；
+  模型名格式因版本而异（如 `qwen3:8b`、`qwen2.5:7b-instruct`），请以列表中显示的名称为准，不要手动猜测。
 - **端口被占用**：换端口启动（`--port 9000`）；重复双击 exe 会自动复用已运行实例。
 - **创建快捷方式失败**：按提示检查桌面目录权限，或改用「以管理员身份运行」启动程序。

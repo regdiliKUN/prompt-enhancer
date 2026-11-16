@@ -11,12 +11,15 @@ const state = {
   busy: false,
   lastSource: '',
   controller: null,
-  timer: null,
   scBusy: false,
   splitRatio: 0.5,
 };
 
 const $ = (id) => document.getElementById(id);
+
+// 优化按钮两态文案，集中定义避免多处硬编码不一致
+const BTN_OPTIMIZE = '一键优化 <kbd>Ctrl+Enter</kbd>';
+const BTN_STOP = '停止生成';
 
 function init() {
   [
@@ -33,26 +36,27 @@ function init() {
   ].forEach((id) => { els[id] = $(id); });
 
   bindEvents();
-  loadConfig().catch((e) => {
-    // 页面先于后端就绪（如程序还在启动中）：给出提示并自动重试
-    setStatus('err', friendlyFetchError(e) + '；稍后自动重试…');
-    setTimeout(() => loadConfig().catch(() => {}), 3000);
-  });
+  bootstrapConfig();
 }
 
 /* ------------------------------------------------------------------ 事件 */
 function bindEvents() {
   els.btnOptimize.addEventListener('click', () => optimize());
   els.btnClearIn.addEventListener('click', () => { els.input.value = ''; updateCount(); saveUiStateDebounced(); els.input.focus(); });
-  els.btnClearOut.addEventListener('click', () => { els.output.value = ''; els.outMeta.textContent = '等待优化'; });
+  els.btnClearOut.addEventListener('click', () => {
+    if (state.busy) return toast('正在生成中，不能清空结果');
+    clearOutput();
+  });
   els.btnCopy.addEventListener('click', () => {
     if (!els.output.value.trim()) return toast('结果为空，无可复制内容');
-    copyText(els.output.value);
+    copyText(els.output.value).then((ok) => toast(ok ? '已复制到剪贴板' : '复制失败，请手动选择复制'));
   });
   els.btnIterate.addEventListener('click', () => {
+    // 生成中若把半截流式结果写回输入框并重启 optimize，会与正在运行的流竞态
+    if (state.busy) return toast('正在生成中，请等待完成后再迭代');
     if (!els.output.value.trim()) return toast('当前没有可迭代优化的结果');
     els.input.value = els.output.value.trim();
-    els.output.value = '';
+    clearOutput(); // 复用统一清空，避免 outMeta/outHint 残留上一次的文案
     updateCount();
     optimize();
   });
@@ -62,12 +66,14 @@ function bindEvents() {
   els.extraToggle.addEventListener('change', () => els.extra.classList.toggle('hidden', !els.extraToggle.checked));
   els.modelSelect.addEventListener('change', () => {
     state.model = els.modelSelect.value;
-    persist({ model: state.model });
+    persist({ model: state.model }).catch(() => {});
   });
-  const persistParams = () => persist({
-    temperature: parseFloat(els.temperature.value) || 0.3,
-    max_tokens: parseInt(els.maxTokens.value, 10) || 1024,
-  });
+  const persistParams = () => {
+    const p = clampParams();
+    els.temperature.value = p.temperature;
+    els.maxTokens.value = p.max_tokens;
+    persist(p).catch(() => {});
+  };
   els.temperature.addEventListener('change', persistParams);
   els.maxTokens.addEventListener('change', persistParams);
 
@@ -78,9 +84,13 @@ function bindEvents() {
   els.scrim.addEventListener('click', closeDrawers);
   els.btnClearHistory.addEventListener('click', async () => {
     if (!confirm('确定清空全部历史记录？该操作不可撤销。')) return;
-    await fetch('/api/history', { method: 'DELETE' });
-    loadHistory();
-    toast('历史记录已清空');
+    try {
+      await fetch('/api/history', { method: 'DELETE' });
+      loadHistory();
+      toast('历史记录已清空');
+    } catch (e) {
+      toast('清空失败：' + friendlyFetchError(e));
+    }
   });
   els.historySearch.addEventListener('input', debounce(loadHistory, 220));
   els.btnCloseDiff.addEventListener('click', () => els.diffModal.classList.add('hidden'));
@@ -88,9 +98,13 @@ function bindEvents() {
 
   els.btnTestConn.addEventListener('click', testConnection);
   els.btnResetSystem.addEventListener('click', async () => {
-    const r = await (await fetch('/api/system-template/default')).json();
-    els.cfgSystem.value = r.system_template;
-    toast('已恢复默认优化规则模板');
+    try {
+      const r = await (await fetch('/api/system-template/default')).json();
+      els.cfgSystem.value = r.system_template;
+      toast('已恢复默认优化规则模板');
+    } catch (e) {
+      toast('恢复模板失败：' + friendlyFetchError(e));
+    }
   });
   els.btnSaveConfig.addEventListener('click', saveConfig);
 
@@ -103,7 +117,16 @@ function bindEvents() {
   initSplitter();
   els.extra.addEventListener('input', saveUiStateDebounced);
   els.extraToggle.addEventListener('change', saveUiStateDebounced);
-  window.addEventListener('resize', debounce(persistStateNow, 800));
+  // 视口跨越 900px 断点时重新应用分栏比例，避免窄屏切回宽屏后内联样式失效
+  let wasWide = window.innerWidth > 900;
+  window.addEventListener('resize', debounce(() => {
+    const wide = window.innerWidth > 900;
+    if (wide !== wasWide) {
+      wasWide = wide;
+      applySplit(state.splitRatio);
+    }
+    persistStateNow();
+  }, 800));
   window.addEventListener('beforeunload', () => {
     try {
       navigator.sendBeacon('/api/state',
@@ -118,13 +141,34 @@ function bindEvents() {
 }
 
 /* ------------------------------------------------------------------ 配置 */
+// 页面可能先于后端就绪（程序冷启动 / 首次加载模型），持续指数退避重试，
+// 直到配置真正加载成功；否则预设、模型探测、状态条都会一直停在不可用状态。
+let configRetryCount = 0;
+let configRetryTimer = null;
+async function bootstrapConfig() {
+  try {
+    await loadConfig();
+    configRetryCount = 0;
+  } catch (e) {
+    configRetryCount += 1;
+    const delay = backoffDelay(configRetryCount);
+    setStatus('err', friendlyFetchError(e) + `；${delay / 1000}s 后自动重试（第 ${configRetryCount} 次）…`);
+    clearTimeout(configRetryTimer);
+    configRetryTimer = setTimeout(bootstrapConfig, delay);
+  }
+}
+
 async function loadConfig() {
   const cfg = await (await fetch('/api/config')).json();
   state.cfg = cfg;
   state.presets = cfg._presets || [];
   state.model = cfg.model || '';
+  // 先用配置值填充，再经统一钳制回写，避免被手动改坏的配置带入非法值
   els.temperature.value = cfg.temperature;
   els.maxTokens.value = cfg.max_tokens;
+  const p = clampParams();
+  els.temperature.value = p.temperature;
+  els.maxTokens.value = p.max_tokens;
   renderPresets(cfg._presets || []);
   await loadUiState();
   probeModels();
@@ -257,8 +301,12 @@ function persistStateNow() {
 function applySplit(ratio) {
   if (typeof ratio !== 'number' || !isFinite(ratio)) return;
   state.splitRatio = Math.min(0.8, Math.max(0.2, ratio));
-  if (window.innerWidth <= 900) return;
   const ws = els.splitter.parentElement;
+  if (window.innerWidth <= 900) {
+    // 清除内联样式，让 CSS media query 的单列布局生效（内联优先级高于 media query）
+    ws.style.gridTemplateColumns = '';
+    return;
+  }
   ws.style.gridTemplateColumns =
     (state.splitRatio * 100).toFixed(2) + 'fr 10px ' + ((1 - state.splitRatio) * 100).toFixed(2) + 'fr';
 }
@@ -301,7 +349,7 @@ async function probeModels() {
       state.models = r.models || [];
       if (!state.model && state.models.length) state.model = state.models[0];
       renderModelOptions();
-      setStatus('ok', `模型就绪：${state.model || '未选择'}`);
+      setModelReady();
     } else {
       state.models = [];
       renderModelOptions();
@@ -312,8 +360,7 @@ async function probeModels() {
     // 与推理服务无关；指数退避自动重试，后端恢复后状态会自动变回就绪。
     probeFailCount += 1;
     setStatus('err', '无法连接本工具的后端服务（程序可能已退出或正在重启），请重新启动提示词增强器；将自动重试…');
-    const delay = Math.min(30000, 2000 * Math.pow(2, probeFailCount - 1));
-    probeRetryTimer = setTimeout(probeModels, delay);
+    probeRetryTimer = setTimeout(probeModels, backoffDelay(probeFailCount));
   }
 }
 
@@ -329,7 +376,7 @@ function renderModelOptions() {
 function renderPresets(presets) {
   els.presets.innerHTML = presets.map((p) => {
     const active = p.key === state.preset ? ' active' : '';
-    return `<button class="chip${active}" data-key="${p.key}" title="${esc(p.desc)}">${esc(p.name)}</button>`;
+    return `<button class="chip${active}" data-key="${esc(p.key)}" title="${esc(p.desc)}">${esc(p.name)}</button>`;
   }).join('');
   els.presets.querySelectorAll('.chip').forEach((chip) => {
     chip.addEventListener('click', () => {
@@ -353,8 +400,21 @@ function friendlyFetchError(e) {
 }
 
 function setStatus(kind, text) {
-  els.statusPill.className = 'pill pill-' + kind;
+  // 只切换状态类，保留 pill 基础类及未来可能新增的修饰类
+  els.statusPill.classList.remove('pill-idle', 'pill-ok', 'pill-busy', 'pill-err');
+  els.statusPill.classList.add('pill-' + kind);
   els.statusText.textContent = text;
+}
+
+function setModelReady() {
+  setStatus('ok', `模型就绪：${state.model || '未选择'}`);
+}
+
+// 统一清空输出，保证各处（手动清空 / 优化前重置）行为一致
+function clearOutput() {
+  els.output.value = '';
+  els.outMeta.textContent = '等待优化';
+  els.outHint.textContent = '结果可编辑，编辑后仍可复制或再次优化';
 }
 
 let toastTimer = null;
@@ -381,10 +441,13 @@ async function optimize() {
     return;
   }
 
+  const params = clampParams();
   state.busy = true;
   state.lastSource = raw;
-  els.output.value = '';
-  els.btnOptimize.innerHTML = '停止生成';
+  clearOutput();
+  // 生成期间输出框设为只读：避免用户编辑与流式 delta 写入相互覆盖（受控拼接无法可靠区分两者）
+  els.output.readOnly = true;
+  els.btnOptimize.innerHTML = BTN_STOP;
   setStatus('busy', '推理中…');
   els.outMeta.textContent = '生成中…';
 
@@ -392,6 +455,17 @@ async function optimize() {
   const tick = setInterval(() => {
     els.outMeta.textContent = `模型加载 / 生成中… ${((performance.now() - started) / 1000).toFixed(1)}s`;
   }, 300);
+
+  // 高频 token 流先累积到缓冲，再用 rAF 合并写入，避免每个 delta 都触发 DOM 重排。
+  let deltaBuffer = '';
+  let deltaRaf = 0;
+  const flushDelta = () => {
+    deltaRaf = 0;
+    if (!deltaBuffer) return;
+    els.output.value += deltaBuffer;
+    deltaBuffer = '';
+    els.output.scrollTop = els.output.scrollHeight;
+  };
 
   state.controller = new AbortController();
   try {
@@ -403,8 +477,8 @@ async function optimize() {
         preset: state.preset,
         extra: els.extraToggle.checked ? els.extra.value : '',
         model: state.model,
-        temperature: parseFloat(els.temperature.value),
-        max_tokens: parseInt(els.maxTokens.value, 10),
+        temperature: params.temperature,
+        max_tokens: params.max_tokens,
       }),
       signal: state.controller.signal,
     });
@@ -418,33 +492,39 @@ async function optimize() {
       onMeta: (d) => { state.api = d.api; },
       onStatus: (d) => { els.outMeta.textContent = d.text; },
       onDelta: (d) => {
-        els.output.value += d.text;
-        els.output.scrollTop = els.output.scrollHeight;
+        deltaBuffer += d.text;
+        if (!deltaRaf) deltaRaf = requestAnimationFrame(flushDelta);
       },
       onDone: (d) => {
+        flushDelta(); // 先把尚未刷新的 token 写入，再做兜底判断
         if (!els.output.value.trim()) els.output.value = d.text || '';
         const secs = ((performance.now() - started) / 1000).toFixed(1);
         els.outMeta.textContent = `${d.model} · 耗时 ${secs}s${d.history_id ? ' · 已存入历史' : ''}`;
       },
       onError: (d) => { throw new Error(d.message); },
     });
-    setStatus('ok', `模型就绪：${state.model}`);
+    setModelReady();
   } catch (e) {
     if (e.name === 'AbortError') {
       els.outMeta.textContent = '已手动停止';
-      setStatus('ok', `模型就绪：${state.model}`);
+      els.outHint.textContent = '已收到的部分结果仍可编辑或复制';
+      setModelReady();
     } else {
       els.outMeta.textContent = '优化失败';
       const msg = friendlyFetchError(e);
       els.outMeta.textContent = /后端服务/.test(msg) ? '后端服务未连接' : '优化失败';
+      els.outHint.textContent = '本次未生成结果，请检查推理服务后重试';
       setStatus('err', '推理失败：' + msg);
       toast(msg);
     }
   } finally {
+    if (deltaRaf) cancelAnimationFrame(deltaRaf); // 撤销尚未执行的帧，避免结束后又追加
+    flushDelta();                                // 中止 / 出错时也保住已收到的 token
+    els.output.readOnly = false;                 // 生成结束恢复可编辑
     clearInterval(tick);
     state.busy = false;
     state.controller = null;
-    els.btnOptimize.innerHTML = '一键优化 <kbd>Ctrl+Enter</kbd>';
+    els.btnOptimize.innerHTML = BTN_OPTIMIZE;
   }
 }
 
@@ -452,33 +532,49 @@ function stopOptimize() {
   if (state.controller) state.controller.abort();
 }
 
+function dispatchSSEBlock(block, handlers) {
+  let event = 'message';
+  const dataLines = [];
+  block.split('\n').forEach((line) => {
+    if (line.startsWith('event:')) event = line.slice(6).trim();
+    else if (line.startsWith('data:')) dataLines.push(line.slice(5).trim());
+  });
+  if (!dataLines.length) return;
+  let payload = {};
+  try { payload = JSON.parse(dataLines.join('\n')); } catch (_) { return; }
+  if (event === 'delta' && handlers.onDelta) handlers.onDelta(payload);
+  else if (event === 'status' && handlers.onStatus) handlers.onStatus(payload);
+  else if (event === 'meta' && handlers.onMeta) handlers.onMeta(payload);
+  else if (event === 'done' && handlers.onDone) handlers.onDone(payload);
+  else if (event === 'error' && handlers.onError) handlers.onError(payload);
+}
+
 async function readSSE(res, handlers) {
   const reader = res.body.getReader();
   const decoder = new TextDecoder('utf-8');
   let buf = '';
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buf += decoder.decode(value, { stream: true });
+  // 在累积缓冲上做 CRLF 规范化：跨 chunk 边界被切断的 \r\n 也能正确合并。
+  const feed = (chunk) => {
+    buf = (buf + chunk).replace(/\r\n/g, '\n');
     let idx;
     while ((idx = buf.indexOf('\n\n')) >= 0) {
       const block = buf.slice(0, idx);
       buf = buf.slice(idx + 2);
-      let event = 'message';
-      const dataLines = [];
-      block.split('\n').forEach((line) => {
-        if (line.startsWith('event:')) event = line.slice(6).trim();
-        else if (line.startsWith('data:')) dataLines.push(line.slice(5).trim());
-      });
-      if (!dataLines.length) continue;
-      let payload = {};
-      try { payload = JSON.parse(dataLines.join('\n')); } catch (_) { continue; }
-      if (event === 'delta' && handlers.onDelta) handlers.onDelta(payload);
-      else if (event === 'status' && handlers.onStatus) handlers.onStatus(payload);
-      else if (event === 'meta' && handlers.onMeta) handlers.onMeta(payload);
-      else if (event === 'done' && handlers.onDone) handlers.onDone(payload);
-      else if (event === 'error' && handlers.onError) handlers.onError(payload);
+      dispatchSSEBlock(block, handlers);
     }
+  };
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      feed(decoder.decode(value, { stream: true }));
+    }
+    // 冲刷 decoder 内残留的多字节序列，并处理未以空行结尾的最后一个事件。
+    feed(decoder.decode());
+    if (buf.trim()) dispatchSSEBlock(buf, handlers);
+  } finally {
+    // onError 抛错或用户中止时也必须释放流锁，避免后续请求复用同一 body 出错。
+    try { reader.releaseLock(); } catch (_) { /* 已释放则忽略 */ }
   }
 }
 
@@ -504,6 +600,10 @@ function showDiff() {
 
 function diffLines(a, b) {
   const n = a.length, m = b.length;
+  // LCS 为 O(n·m)，极端长文本会分配巨量内存。超过阈值降级为整段替换展示。
+  if (n * m > 4_000_000) {
+    return a.map((line) => ['del', line]).concat(b.map((line) => ['add', line]));
+  }
   const dp = [];
   for (let i = 0; i <= n; i++) dp.push(new Uint32Array(m + 1));
   for (let i = n - 1; i >= 0; i--) {
@@ -526,8 +626,14 @@ function diffLines(a, b) {
 /* ------------------------------------------------------------------ 历史 */
 async function loadHistory() {
   const q = els.historySearch.value.trim();
-  const r = await (await fetch('/api/history?q=' + encodeURIComponent(q))).json();
-  const items = r.items || [];
+  let items;
+  try {
+    const r = await (await fetch('/api/history?q=' + encodeURIComponent(q))).json();
+    items = r.items || [];
+  } catch (e) {
+    els.historyList.innerHTML = '<div class="empty">加载失败：' + esc(friendlyFetchError(e)) + '</div>';
+    return;
+  }
   if (!items.length) {
     els.historyList.innerHTML = '<div class="empty">暂无记录</div>';
     return;
@@ -538,7 +644,7 @@ async function loadHistory() {
     const model = esc(it.model || '');
     const src = esc((it.source || '').slice(0, 220));
     const res = esc((it.result || '').slice(0, 260));
-    return `<div class="hist" data-id="${it.id}">
+    return `<div class="hist" data-id="${esc(it.id)}">
       <div class="hist-top"><span>${time}</span><span class="tag">${tag}</span><span>${model}</span></div>
       <div class="label">原文</div><pre>${src}</pre>
       <div class="label">优化结果</div><pre>${res}</pre>
@@ -555,12 +661,26 @@ async function loadHistory() {
     node.querySelectorAll('button[data-act]').forEach((btn) => {
       btn.addEventListener('click', async () => {
         const item = items.find((x) => String(x.id) === id);
+        if (!item) return toast('该记录已不存在，请刷新历史列表');
         const act = btn.dataset.act;
+        // 生成中的流式写入会与复用操作争抢输入框/输出框，先拦截（与清空/迭代的 busy 保护一致）
+        if (state.busy && (act === 'source' || act === 'result')) {
+          return toast('正在生成中，请等待完成后再复用历史记录');
+        }
         if (act === 'source') { els.input.value = item.source || ''; updateCount(); closeDrawers(); toast('原文已载入输入区'); }
-        else if (act === 'result') { els.output.value = item.result || ''; closeDrawers(); toast('结果已载入输出区'); }
+        else if (act === 'result') {
+          els.output.value = item.result || '';
+          state.lastSource = item.source || ''; // 同步原文，确保「对比查看」基准正确
+          els.outMeta.textContent = '来自历史记录';
+          closeDrawers(); toast('结果已载入输出区');
+        }
         else if (act === 'delete') {
-          await fetch('/api/history/' + id, { method: 'DELETE' });
-          loadHistory();
+          try {
+            await fetch('/api/history/' + id, { method: 'DELETE' });
+            loadHistory();
+          } catch (e) {
+            toast('删除失败：' + friendlyFetchError(e));
+          }
         }
       });
     });
@@ -603,7 +723,7 @@ async function testConnection() {
       body: JSON.stringify({
         endpoint: els.cfgEndpoint.value.trim(),
         api: els.cfgApi.value,
-        timeout: parseFloat(els.cfgTimeout.value) || 6,
+        timeout: clampTimeout(els.cfgTimeout.value),
       }),
     });
     const r = await res.json();
@@ -618,7 +738,7 @@ async function testConnection() {
       els.testResult.textContent = '未就绪：' + r.message;
     }
   } catch (e) {
-    els.testResult.textContent = '检测失败：' + e.message;
+    els.testResult.textContent = '检测失败：' + friendlyFetchError(e);
   }
 }
 
@@ -632,35 +752,44 @@ async function persist(patch) {
 }
 
 async function saveConfig() {
+  const params = clampParams();
   const body = {
     endpoint: els.cfgEndpoint.value.trim(),
     api: els.cfgApi.value,
     model: els.cfgModel.value.trim(),
     api_key: els.cfgApiKey.value.trim(),
-    timeout: parseFloat(els.cfgTimeout.value) || 180,
-    temperature: parseFloat(els.temperature.value),
-    max_tokens: parseInt(els.maxTokens.value, 10),
+    timeout: clampTimeout(els.cfgTimeout.value),
+    temperature: params.temperature,
+    max_tokens: params.max_tokens,
     system_template: els.cfgSystem.value,
   };
-  const r = await (await fetch('/api/config', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  })).json();
-  Object.assign(state.cfg, r.config || body);
-  state.model = body.model;
-  renderModelOptions();
-  await probeModels();
-  toast('设置已保存');
+  try {
+    const r = await (await fetch('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })).json();
+    Object.assign(state.cfg, r.config || body);
+    state.model = body.model;
+    // 工具条参数与抽屉设置同源，保存后需回写，避免显示值与真实推理值不一致
+    els.temperature.value = params.temperature;
+    els.maxTokens.value = params.max_tokens;
+    renderModelOptions();
+    await probeModels();
+    toast('设置已保存');
+  } catch (e) {
+    toast('设置保存失败：' + friendlyFetchError(e));
+  }
 }
 
 /* ------------------------------------------------------------------ 工具 */
 function copyText(text) {
   if (navigator.clipboard && window.isSecureContext) {
-    navigator.clipboard.writeText(text).then(() => toast('已复制到剪贴板'), () => fallbackCopy(text));
-  } else {
-    fallbackCopy(text);
+    return navigator.clipboard.writeText(text)
+      .then(() => true)
+      .catch(() => fallbackCopy(text)); // Clipboard API 被拒绝时回退到 execCommand
   }
+  return Promise.resolve(fallbackCopy(text));
 }
 
 function fallbackCopy(text) {
@@ -670,14 +799,36 @@ function fallbackCopy(text) {
   ta.style.opacity = '0';
   document.body.appendChild(ta);
   ta.select();
-  try { document.execCommand('copy'); toast('已复制到剪贴板'); } catch (_) { toast('复制失败，请手动选择复制'); }
+  let ok = false;
+  try { ok = document.execCommand('copy'); } catch (_) { /* 下方统一提示 */ }
   document.body.removeChild(ta);
+  return ok;
 }
 
 function esc(s) {
   return String(s == null ? '' : s)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+// number 输入框可被手动清空或键入越界值，统一在此钳制，避免 NaN→null 传给后端。
+function clampParams() {
+  const t = parseFloat(els.temperature.value);
+  const m = parseInt(els.maxTokens.value, 10);
+  return {
+    temperature: Number.isFinite(t) ? Math.min(2, Math.max(0, t)) : 0.3,
+    max_tokens: Number.isFinite(m) ? Math.min(8192, Math.max(64, m)) : 1024,
+  };
+}
+
+function clampTimeout(value) {
+  const t = parseFloat(value);
+  return Number.isFinite(t) ? Math.min(1200, Math.max(10, t)) : 180;
+}
+
+// 统一的指数退避：2s、4s、8s… 封顶 30s。供配置加载与模型探测共用。
+function backoffDelay(attempt) {
+  return Math.min(30000, 2000 * Math.pow(2, Math.max(1, attempt) - 1));
 }
 
 function debounce(fn, ms) {
