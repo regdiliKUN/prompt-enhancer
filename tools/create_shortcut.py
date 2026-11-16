@@ -27,19 +27,23 @@ import argparse
 import glob
 import json
 import os
+import shutil
 import stat
 import subprocess
 import sys
 import tempfile
+import time
 
 APP_NAME = "提示词增强器"
 APP_COMMENT = "本地提示词优化工具（数据不出本机）"
+OWN_MARK = "由提示词增强器创建"
 LINK_NAME = "提示词增强器.lnk"          # Windows
 COMMAND_NAME = "提示词增强器.command"    # macOS
 DESKTOP_ENTRY = "prompt-enhancer.desktop"  # Linux
 EXE_NAME = "PromptEnhancer.exe"
 LAUNCHER = "launcher.py"
 ICON_NAMES = ("icon.ico", "icon.png", "icon.icns")
+UNIX_MARK = "# made-by-prompt-enhancer"    # 写进 .command / .desktop 的归属标记
 
 EXIT_OK, EXIT_FAIL, EXIT_UNSUPPORTED = 0, 1, 2
 
@@ -137,7 +141,8 @@ def detect_target(root):
     if exe:
         return {
             "target": exe, "arguments": "", "workdir": root,
-            "icon": find_icon(root, exe), "description": "%s · %s" % (APP_NAME, APP_COMMENT),
+            "icon": find_icon(root, exe),
+            "description": "%s · %s（%s）" % (APP_NAME, OWN_MARK, APP_COMMENT),
             "kind": "exe",
         }
 
@@ -146,7 +151,8 @@ def detect_target(root):
         py = python_for_launcher()
         return {
             "target": py, "arguments": '"%s"' % launcher, "workdir": root,
-            "icon": find_icon(root, ""), "description": "%s · %s（脚本入口）" % (APP_NAME, APP_COMMENT),
+            "icon": find_icon(root, ""),
+            "description": "%s · %s（%s，脚本入口）" % (APP_NAME, OWN_MARK, APP_COMMENT),
             "kind": "script",
         }
 
@@ -184,6 +190,9 @@ def desktop_dir(explicit=None):
                 if os.path.isdir(p):
                     return p
         return os.path.join(os.path.expanduser("~"), "Desktop")
+    # Linux 尊重 XDG_DESKTOP_DIR（与 shell 版保持一致）；该函数原本定义了却从未被调用
+    if sys.platform.startswith("linux"):
+        return linux_desktop_dir()
     return os.path.join(os.path.expanduser("~"), "Desktop")
 
 
@@ -237,27 +246,114 @@ def friendly_error(stderr="", stdout=""):
 
 
 def read_lnk(path):
-    """读取已有快捷方式的目标 / 参数 / 图标 / 工作目录"""
+    """读取已有快捷方式的目标 / 参数 / 图标 / 工作目录 / 描述（用于归属判定）"""
     script = (
+        "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8\n"  # 中文描述不能变成乱码
         "$ErrorActionPreference='Stop'\n"
         "$ws = New-Object -ComObject WScript.Shell\n"
         "$sc = $ws.CreateShortcut(%s)\n"
-        "@{ t = $sc.TargetPath; a = $sc.Arguments; i = $sc.IconLocation; w = $sc.WorkingDirectory }"
-        " | ConvertTo-Json -Compress\n" % _ps_str(path)
+        "@{ t = $sc.TargetPath; a = $sc.Arguments; i = $sc.IconLocation; w = $sc.WorkingDirectory;"
+        " d = $sc.Description } | ConvertTo-Json -Compress\n" % _ps_str(path)
     )
     try:
         proc = _run_ps(script, timeout=30)
         if proc.returncode == 0 and proc.stdout.strip():
             data = json.loads(proc.stdout.strip().splitlines()[0])
             return {"target": data.get("t"), "arguments": data.get("a"),
-                    "icon": data.get("i"), "workdir": data.get("w")}
+                    "icon": data.get("i"), "workdir": data.get("w"),
+                    "description": data.get("d")}
     except Exception:
         pass
     return None
 
 
+def _same_target(a, b):
+    """比较两个目标路径是否指向同一文件：展开环境变量/~、去引号、大小写与路径分隔规范化"""
+    def norm(p):
+        p = (p or "").strip().strip('"')
+        if not p:
+            return ""
+        p = os.path.expandvars(os.path.expanduser(p))
+        try:
+            p = os.path.realpath(p)
+        except OSError:
+            pass
+        return os.path.normcase(os.path.normpath(p))
+
+    na, nb = norm(a), norm(b)
+    return bool(na) and na == nb
+
+
+def is_owned(cur, tgt):
+    """判断同名快捷方式是否为本产品创建（绝不改动用户自建的快捷方式）"""
+    if not cur:
+        return False
+    d = (cur.get("description") or "").strip()
+    if OWN_MARK in d:
+        return True
+    if d.startswith(APP_NAME):  # 旧版本创建的
+        return True
+    if _same_target(cur.get("target"), tgt.get("target")):
+        return True  # 指向本程序本身，即使没有标记也可安全更新
+    return False
+
+
+def backup_dir(root):
+    return os.path.join(root, "data", "shortcut_backup")
+
+
+def backup_link(root, path, cur):
+    """覆盖前备份；返回备份文件路径或 None"""
+    try:
+        d = backup_dir(root)
+        os.makedirs(d, exist_ok=True)
+        dst = os.path.join(d, os.path.basename(path))
+        shutil.copy2(path, dst)
+        with open(dst + ".json", "w", encoding="utf-8") as f:
+            json.dump({"path": path, "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+                       "target": (cur or {}).get("target"),
+                       "description": (cur or {}).get("description")},
+                      f, ensure_ascii=False, indent=2)
+        return dst
+    except Exception:
+        return None
+
+
+def restore_backup(root, name, desktop=None):
+    d = backup_dir(root)
+    src = os.path.join(d, name)
+    desk = desktop or desktop_dir(None)
+    dst = os.path.join(desk, name)
+    if not os.path.isfile(src):
+        return False, "没有可恢复的备份（%s 不存在）" % src
+    # 绝不覆盖用户自建的同名快捷方式——与创建流程遵守同一条归属约定。
+    if os.path.exists(dst):
+        if os.name == "nt":
+            cur = read_lnk(dst)
+            # 传空 target：只依据 Description 归属标记判断，不把"恰好指向同路径"算作本产品
+            if not is_owned(cur, {"target": ""}):
+                return False, ("桌面已存在同名快捷方式，且不是本产品创建的；"
+                               "为保护你的文件，未执行恢复。可先手动移走它再重试。")
+        else:
+            try:
+                with open(dst, encoding="utf-8", errors="replace") as f:
+                    if UNIX_MARK not in f.read():
+                        return False, ("桌面已存在同名启动器，且不是本产品创建的；"
+                                       "为保护你的文件，未执行恢复。")
+            except OSError:
+                pass
+    try:
+        shutil.copy2(src, dst)
+        if os.name != "nt":
+            os.chmod(dst, os.stat(dst).st_mode | stat.S_IXUSR)
+        return True, "已把快捷方式恢复为最近一次修改前的状态：%s" % dst
+    except Exception as exc:  # noqa: BLE001
+        return False, "恢复失败：%s" % exc
+
+
 def _write_vbs(path, tgt, icon, prev_err=""):
     """回退方案：用 cscript + VBScript 写 .lnk（PowerShell 被禁用 / 不可用时）"""
+    # 注意：IconLocation 赋空串会导致「无效的过程调用或参数」，无图标时整行跳过
     vbs = (
         'Set ws = CreateObject("WScript.Shell")\n'
         'Set sc = ws.CreateShortcut(%s)\n'
@@ -265,10 +361,11 @@ def _write_vbs(path, tgt, icon, prev_err=""):
         'sc.Arguments = %s\n'
         'sc.WorkingDirectory = %s\n'
         'sc.Description = %s\n'
-        'sc.IconLocation = %s\n'
+        '%s'
         'sc.WindowStyle = 1\n'
         'sc.Save\n' % (_vbs_str(path), _vbs_str(tgt["target"]), _vbs_str(tgt["arguments"]),
-                       _vbs_str(tgt["workdir"]), _vbs_str(tgt["description"]), _vbs_str(icon))
+                       _vbs_str(tgt["workdir"]), _vbs_str(tgt["description"]),
+                       ('sc.IconLocation = %s\n' % _vbs_str(icon)) if icon else "")
     )
     fd, vpath = tempfile.mkstemp(prefix="pe_sc_", suffix=".vbs")
     os.close(fd)
@@ -304,10 +401,11 @@ def _try_write(path, tgt):
         "$sc.Arguments = %s\n"
         "$sc.WorkingDirectory = %s\n"
         "$sc.Description = %s\n"
-        "$sc.IconLocation = %s\n"
+        "%s"
         "$sc.WindowStyle = 1\n"
         "$sc.Save()\n" % (_ps_str(path), _ps_str(tgt["target"]), _ps_str(tgt["arguments"]),
-                          _ps_str(tgt["workdir"]), _ps_str(tgt["description"]), _ps_str(icon))
+                          _ps_str(tgt["workdir"]), _ps_str(tgt["description"]),
+                          ("$sc.IconLocation = %s\n" % _ps_str(icon)) if icon else "")
     )
     try:
         proc = _run_ps(ps, timeout=60)
@@ -332,7 +430,7 @@ def _verify_lnk(path, tgt):
     cur = read_lnk(path)
     if not cur:
         return None
-    return os.path.normcase(cur["target"] or "") == os.path.normcase(tgt["target"])
+    return _same_target(cur.get("target"), tgt.get("target"))
 
 
 def write_lnk(path, tgt):
@@ -413,7 +511,7 @@ def linux_desktop_dir():
     return p if os.path.isdir(p) else os.path.expanduser("~")
 
 
-def linux_create(path, tgt):
+def linux_create(path, tgt, mark=False):
     exec_line = _sh_q(tgt["target"])
     if tgt["arguments"]:
         exec_line += " " + tgt["arguments"]
@@ -422,13 +520,15 @@ def linux_create(path, tgt):
         "Type=Application\n"
         "Version=1.0\n"
         "Name=%s\n"
-        "Comment=%s\n"
+        "Comment=%s · %s\n"
+        "# %s\n"
         "Exec=%s\n"
         "Path=%s\n"
         "Icon=%s\n"
         "Terminal=false\n"
         "Categories=Utility;Development;\n"
-        "StartupNotify=true\n" % (APP_NAME, APP_COMMENT, exec_line, tgt["workdir"], tgt["icon"])
+        "StartupNotify=true\n" % (APP_NAME, APP_COMMENT, OWN_MARK, UNIX_MARK,
+                                  exec_line, tgt["workdir"], tgt["icon"])
     )
     with open(path, "w", encoding="utf-8") as f:
         f.write(content)
@@ -443,56 +543,108 @@ def check_windows(link, tgt):
     exists = os.path.exists(link)
     cur = read_lnk(link) if exists else None
     if not cur:
-        return {"exists": exists, "correct": False, "current": None}
-    same_target = os.path.normcase(cur["target"] or "") == os.path.normcase(tgt["target"])
+        return {"exists": exists, "correct": False, "owned": False, "current": None}
+    same_target = _same_target(cur.get("target"), tgt.get("target"))
     same_icon = (not tgt["icon"]) or (cur["icon"] or "").lower().startswith(tgt["icon"].lower())
     same_args = (cur["arguments"] or "") == (tgt["arguments"] or "")
     return {"exists": True, "correct": bool(same_target and same_icon and same_args),
-            "current": cur}
+            "owned": is_owned(cur, tgt), "current": cur}
 
 
-def ensure_windows(link, tgt, force):
+def ensure_windows(link, tgt, force, root):
     info = check_windows(link, tgt)
+    if info["exists"] and not info["owned"]:
+        # 用户自建的同名快捷方式：绝不创建 / 覆盖 / 删除，只提示
+        # read_lnk 失败时 current 为 None，不能直接下标；用 .get 安全降级为「未知」
+        cur_target = (info.get("current") or {}).get("target") or "未知"
+        return {"status": "name_taken", "path": link,
+                "message": ("桌面已有同名快捷方式，但它不是本产品创建的（指向：%s）。"
+                            "为保护你的自建快捷方式，本工具不会改动它；"
+                            "可用 --name 换一个名称为本产品创建。"
+                            % cur_target)}
     if info["exists"] and info["correct"] and not force:
         return {"status": "exists", "path": link,
                 "message": "桌面快捷方式已存在且指向正确，未重复创建：%s" % link}
+
+    # 只会走到这里的都是本产品自己的快捷方式（或桌面尚无同名文件）
+    backup = backup_link(root, link, info["current"]) if info["exists"] else None
+
+    def rollback(err):
+        if backup and os.path.isfile(backup):
+            try:
+                shutil.copy2(backup, link)
+                return err + "。已自动回滚，桌面快捷方式保持原样。"
+            except OSError:
+                pass
+        return err
+
     ok, err = write_lnk(link, tgt)
     if not ok:
-        return {"status": "failed", "path": link, "message": err or "创建快捷方式失败"}
+        return {"status": "failed", "path": link, "message": rollback(err or "创建快捷方式失败")}
     after = check_windows(link, tgt)
     if not after["correct"]:
         return {"status": "failed", "path": link,
-                "message": "快捷方式已写入但校验未通过，请检查目标文件是否存在：%s" % tgt["target"]}
+                "message": rollback("快捷方式已写入但校验未通过，请检查目标文件是否存在：%s" % tgt["target"])}
     status = "updated" if info["exists"] else "created"
     msg = ("已在桌面创建快捷方式：%s" % link if status == "created"
            else "已更新现有快捷方式（指向/图标/工作目录已刷新）：%s" % link)
-    return {"status": status, "path": link, "message": msg}
+    if backup:
+        msg += "（更新前的旧版本已备份到 data/shortcut_backup/，可用 --restore 回滚）"
+    return {"status": status, "path": link, "message": msg, "backup": backup}
 
 
-def ensure_unix(root, tgt, desktop, force, system):
+def ensure_unix(root, tgt, desktop, force, system, link_name=None):
     if system == "darwin":
-        path = os.path.join(desktop, COMMAND_NAME)
-        if os.path.exists(path) and not force:
-            with open(path, encoding="utf-8") as f:
-                if tgt["target"] in f.read():
-                    return {"status": "exists", "path": path,
-                            "message": "桌面启动器已存在且指向正确，未重复创建：%s" % path}
+        name = link_name or COMMAND_NAME
+        path = os.path.join(desktop, name)
+        existed = os.path.exists(path)
+        if existed:
+            with open(path, encoding="utf-8", errors="replace") as f:
+                content = f.read()
+            if UNIX_MARK not in content:
+                return {"status": "name_taken", "path": path,
+                        "message": "桌面已有同名启动器，但它不是本产品创建的，为避免误删未做改动；可用 --name 换名创建。"}
+            if tgt["target"] in content and not force:
+                return {"status": "exists", "path": path,
+                        "message": "桌面启动器已存在且指向正确，未重复创建：%s" % path}
+            # 备份元信息应记录真正的启动目标，而非 shebang 首行 "#!/bin/bash"
+            old_target = tgt["target"] if tgt["target"] in content else ""
+            backup_file = backup_link(root, path, {"target": old_target})
+        else:
+            backup_file = None
         res = mac_create(path, tgt)
-        return {"status": "updated" if os.path.exists(path) else "created",
-                "path": res["path"], "message": "已在桌面创建启动器：%s %s" % (path, res["note"])}
+        # 用 with 读取，避免文件句柄泄漏（mac_create 生成的启动器需要带归属标记）
+        with open(res["path"], encoding="utf-8") as f:
+            need_mark = UNIX_MARK not in f.read()
+        if need_mark:
+            with open(res["path"], "a", encoding="utf-8") as f:
+                f.write(UNIX_MARK + "\n")
+        return {"status": "updated" if existed else "created", "path": res["path"],
+                "message": "已在桌面创建启动器：%s %s" % (path, res["note"]),
+                "backup": backup_file}
 
-    entry = os.path.join(desktop, DESKTOP_ENTRY)
-    menu = os.path.join(os.path.expanduser("~"), ".local", "share", "applications", DESKTOP_ENTRY)
+    name = link_name or DESKTOP_ENTRY
+    entry = os.path.join(desktop, name)
+    menu = os.path.join(os.path.expanduser("~"), ".local", "share", "applications", name)
     existed = os.path.exists(entry)
-    path = linux_create(entry, tgt)
+    if existed:
+        with open(entry, encoding="utf-8", errors="replace") as f:
+            content = f.read()
+        if UNIX_MARK not in content:
+            return {"status": "name_taken", "path": entry,
+                    "message": "桌面已有同名 .desktop 文件，但它不是本产品创建的，为避免误删未做改动；可用 --name 换名创建。"}
+        backup_file = backup_link(root, entry, {"target": content})
+    else:
+        backup_file = None
+    path = linux_create(entry, tgt, mark=True)
     try:
         os.makedirs(os.path.dirname(menu), exist_ok=True)
-        linux_create(menu, tgt)
+        linux_create(menu, tgt, mark=True)
     except OSError:
         menu = ""
     note = "（同时已登记到应用菜单）" if menu else ""
     return {"status": "updated" if existed else "created", "path": path,
-            "message": "已在桌面创建快捷方式：%s%s" % (path, note)}
+            "message": "已在桌面创建快捷方式：%s%s" % (path, note), "backup": backup_file}
 
 
 def launch(result_path, tgt):
@@ -508,6 +660,29 @@ def launch(result_path, tgt):
         return False
 
 
+def normalize_name(name, system):
+    name = (name or "").strip()
+    if not name:
+        return ""
+    # 先校验再补扩展名：否则 ".." 会被补成 "...lnk" 而绕过下面的特殊名检查
+    if os.path.basename(name) != name or name in (".", ".."):
+        raise ShortcutError("快捷方式名称不合法：%s（只能是文件名，不能包含路径）" % name)
+    # Windows 文件名禁用字符；按 system 参数判定（与后缀补全一致），
+    # 这样跨平台自测指定 system="win32" 时也能覆盖到校验逻辑
+    if str(system).startswith("win"):
+        bad = [c for c in '<>:"/\\|?*' if c in name]
+        if bad:
+            raise ShortcutError("快捷方式名称包含 Windows 不允许的字符（%s），请换一个名称" % " ".join(bad))
+    # 按平台补全扩展名：Windows→.lnk，macOS→.command，Linux→.desktop。
+    # 缺少后缀时桌面环境不会识别为快捷方式（macOS 无法双击、Linux 不显示为启动器）。
+    suffix = (".lnk" if str(system).startswith("win")
+              else ".command" if system == "darwin"
+              else ".desktop" if str(system).startswith("linux") else "")
+    if suffix and not name.lower().endswith(suffix):
+        name += suffix
+    return name
+
+
 def run(args):
     root = app_root(args.root)
     tgt = detect_target(root)
@@ -518,30 +693,59 @@ def run(args):
         raise ShortcutError("主程序文件不存在：%s\n请确认解压完整后重试。" % tgt["target"])
 
     system = sys.platform
+    name = normalize_name(getattr(args, "name", ""), system)
+
+    if args.restore:
+        if os.name == "nt":
+            ok, msg = restore_backup(root, name or LINK_NAME, desktop)
+            return {"status": "restored" if ok else "failed", "root": root,
+                    "target": tgt, "desktop": desktop, "message": msg}
+        ok, msg = restore_backup(root, name or (COMMAND_NAME if system == "darwin" else DESKTOP_ENTRY), desktop)
+        return {"status": "restored" if ok else "failed", "root": root,
+                "target": tgt, "desktop": desktop, "message": msg}
+
     if os.name == "nt":
-        link = os.path.join(desktop, LINK_NAME)
+        link = os.path.join(desktop, name or LINK_NAME)
         if args.check:
             info = check_windows(link, tgt)
-            return {"status": "exists" if info["exists"] and info["correct"] else (
-                "mismatch" if info["exists"] else "missing"), "path": link,
-                    "message": ("桌面快捷方式已存在且正确：%s" % link) if info["correct"]
-                    else ("桌面快捷方式已存在但指向不正确：%s" % link) if info["exists"]
-                    else "桌面快捷方式尚未创建", "root": root, "target": tgt, "desktop": desktop}
-        res = ensure_windows(link, tgt, args.force)
+            if info["exists"] and not info["owned"]:
+                cur_target = (info.get("current") or {}).get("target") or "未知"
+                st, msg = "name_taken", ("桌面已有同名快捷方式，但它不是本产品创建的（指向：%s），不会改动它。"
+                                         % cur_target)
+            else:
+                st = "exists" if info["exists"] and info["correct"] else (
+                    "mismatch" if info["exists"] else "missing")
+                msg = ("桌面快捷方式已存在且正确：%s" % link) if info["correct"] \
+                    else ("桌面快捷方式已存在但指向不正确：%s" % link) if info["exists"] \
+                    else "桌面快捷方式尚未创建"
+            return {"status": st, "path": link, "message": msg,
+                    "root": root, "target": tgt, "desktop": desktop}
+        res = ensure_windows(link, tgt, args.force, root)
     elif system == "darwin" or system.startswith("linux"):
         if args.check:
-            probe = os.path.join(desktop, COMMAND_NAME if system == "darwin" else DESKTOP_ENTRY)
+            probe = os.path.join(desktop, name or (COMMAND_NAME if system == "darwin" else DESKTOP_ENTRY))
             ok = os.path.exists(probe)
-            return {"status": "exists" if ok else "missing", "path": probe,
-                    "message": ("桌面快捷方式已存在：%s" % probe) if ok else "桌面快捷方式尚未创建",
+            owned = False
+            if ok:
+                with open(probe, encoding="utf-8", errors="replace") as f:
+                    owned = UNIX_MARK in f.read()
+            return {"status": "exists" if ok and owned else ("name_taken" if ok else "missing"),
+                    "path": probe,
+                    "message": ("桌面快捷方式已存在：%s" % probe) if ok and owned
+                    else ("桌面已有同名文件，但不是本产品创建的，未改动" if ok
+                          else "桌面快捷方式尚未创建"),
                     "root": root, "target": tgt, "desktop": desktop}
-        res = ensure_unix(root, tgt, desktop, args.force, system)
+        res = ensure_unix(root, tgt, desktop, args.force, system, link_name=name)
     else:
         raise ShortcutError("暂不支持的操作系统：%s（可手动为 %s 创建快捷方式）" % (system, tgt["target"]))
 
     res.update({"root": root, "target": tgt, "desktop": desktop})
-    if args.launch and res["status"] != "failed":
-        res["launched"] = launch(res["path"], tgt)
+    if args.launch and res["status"] not in ("failed", "name_taken"):
+        launched = launch(res["path"], tgt)
+        res["launched"] = launched
+        # 与 shell 版一致：启动失败不能静默，要在用户可见的结果里明确说明
+        if not launched:
+            res["message"] += "；但自动启动失败，请手动双击桌面快捷方式"
     return res
 
 
@@ -549,9 +753,11 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description="一键创建 %s 桌面快捷方式" % APP_NAME)
     ap.add_argument("--root", help="程序根目录（默认自动识别）")
     ap.add_argument("--desktop", help="桌面目录（默认自动识别，可用于自测）")
+    ap.add_argument("--name", help="快捷方式文件名（默认「提示词增强器」，用于与用户自建快捷方式区分）")
     ap.add_argument("--check", action="store_true", help="只检查状态，不创建")
-    ap.add_argument("--force", action="store_true", help="即使已正确也强制重写")
+    ap.add_argument("--force", action="store_true", help="即使已正确也强制重写（仅对本产品自己的快捷方式生效）")
     ap.add_argument("--launch", action="store_true", help="创建后立即启动程序")
+    ap.add_argument("--restore", action="store_true", help="把上一次覆盖前的快捷方式恢复回桌面（回滚）")
     ap.add_argument("--json", action="store_true", help="以 JSON 输出结果")
     args = ap.parse_args(argv)
 
@@ -586,7 +792,7 @@ def main(argv=None):
         print("结果　　　：%s" % res["message"])
         if res.get("launched"):
             print("已尝试启动程序。")
-    return EXIT_FAIL if res["status"] == "failed" else EXIT_OK
+    return EXIT_FAIL if res["status"] in ("failed", "name_taken") else EXIT_OK
 
 
 if __name__ == "__main__":

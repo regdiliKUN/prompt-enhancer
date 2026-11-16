@@ -18,8 +18,8 @@
   </div>
 
   <div class="topbar-right">
-    <div id="statusPill" class="pill pill-idle">
-      <span class="dot"></span><span id="statusText">正在检测模型…</span>
+    <div id="statusPill" class="pill pill-idle" role="status" aria-live="polite">
+      <span class="dot" aria-hidden="true"></span><span id="statusText">正在检测模型…</span>
     </div>
     <button class="btn primary btn-launch" id="btnShortcut" title="在桌面创建带图标的快捷方式，并通过它启动程序（重复点击不会重复创建）">
       <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -65,7 +65,7 @@
       <span class="meta" id="inCount">0 字</span>
       <button class="btn tiny ghost" id="btnClearIn">清空</button>
     </div>
-    <textarea id="input" spellcheck="false" placeholder="把你要投喂给 AI 的原始提示词粘贴到这里…&#10;&#10;例如：帮我写个爬虫，抓一下那个网站的数据，谢谢啦，越快越好"></textarea>
+    <textarea id="input" spellcheck="false" aria-label="原始提示词输入框" placeholder="把你要投喂给 AI 的原始提示词粘贴到这里…&#10;&#10;例如：帮我写个爬虫，抓一下那个网站的数据，谢谢啦，越快越好"></textarea>
     <div class="pane-foot">
       <div class="extra">
         <label class="switch">
@@ -86,7 +86,7 @@
       <span class="meta" id="outMeta">等待优化</span>
       <button class="btn tiny ghost" id="btnClearOut">清空</button>
     </div>
-    <textarea id="output" spellcheck="false" placeholder="优化后的提示词会出现在这里，可直接编辑…"></textarea>
+    <textarea id="output" spellcheck="false" aria-label="优化结果输入框，可编辑" placeholder="优化后的提示词会出现在这里，可直接编辑…"></textarea>
     <div class="pane-foot">
       <span class="hint" id="outHint">结果可编辑，编辑后仍可复制或再次优化</span>
       <div class="right">
@@ -180,7 +180,7 @@
 </div>
 
 <div class="scrim hidden" id="scrim"></div>
-<div class="toast hidden" id="toast"></div>
+<div class="toast hidden" id="toast" role="status" aria-live="polite"></div>
 
 <script src="/app.js"></script>
 </body>
